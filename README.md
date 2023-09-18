@@ -1,1 +1,1 @@
-# ekd-d-in-place-upgrade
+# eks-d-in-place-upgrade
