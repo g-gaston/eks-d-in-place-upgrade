@@ -1,0 +1,1 @@
+docker run --privileged --pid=host -it --rm -v $(pwd)/eks-d:/usr/host/eks-d docker.io/library/eks-d-in-place-upgrader /bin/sh -c 'cp -r /usr/local/eks-d/* /usr/host/eks-d/ && /usr/bin/nsenter1 /home/ubuntu/eks-a/dev/in-place-upgrades/eks-d/kubeadm version && rm -rf /usr/host/eks-d/*'

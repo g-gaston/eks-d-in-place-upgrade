@@ -1,0 +1,14 @@
+REGISTRY ?= public.ecr.aws/i0f3w2d9
+UPGRADE_IMAGE_TAG ?= v$(EKSD_CHANNEL)-eks-d-$(EKSD_RELEASE)
+UPGRADE_IMAGE_REGISTRY ?= eks-d-in-place-upgrader
+UPGRADE_IMAGE_URI ?= $(REGISTRY)/$(UPGRADE_IMAGE_REGISTRY):$(UPGRADE_IMAGE_TAG)
+
+EKSD_CHANNEL ?= 1-27
+EKSD_RELEASE ?= 9
+KUBE_VERSION ?= v1.27.4
+
+image:
+	docker build --build-arg EKSD_CHANNEL=$(EKSD_CHANNEL) --build-arg EKSD_RELEASE=$(EKSD_RELEASE) --build-arg KUBE_VERSION=$(KUBE_VERSION) -t $(UPGRADE_IMAGE_URI) .
+
+push: image
+	docker push $(UPGRADE_IMAGE_URI)
