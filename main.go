@@ -5,120 +5,137 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/pkg/errors"
+	"golang.org/x/exp/slices"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
+
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func main() {
-	// nodeName := "w-cluster-2-cmtrh"
-	nodeName := "w-cluster-2-t56rb"
 	ctx := context.Background()
 	c, err := NewRuntimeClientFromFileName(os.Args[1])
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	upgraderPod := upgradeRestControlPlanePod(nodeName)
-	key := client.ObjectKeyFromObject(upgraderPod)
-	existingPod := &corev1.Pod{}
-	err = c.Get(ctx, key, existingPod)
-	if err == nil {
-		fmt.Println("Pod exists, deleting")
-		if err := c.Delete(ctx, existingPod, &client.DeleteOptions{}); err != nil {
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "eksa-system"}}); err != nil && !apierrors.IsAlreadyExists(err) {
+		log.Fatal(err)
+	}
+
+	nodes, err := getControlPlaneNodes(ctx, c)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	firstCPNode := nodes[0]
+	if err := upgradeFirstControlPlaneNode(ctx, c, &firstCPNode); err != nil {
+		log.Fatal(err)
+	}
+
+	for _, node := range nodes[1:] {
+		n := node
+		if err := upgradeRestControlPlaneNode(ctx, c, &n); err != nil {
 			log.Fatal(err)
 		}
-		time.Sleep(2 * time.Second)
-	} else if !apierrors.IsNotFound(err) {
-		log.Fatal(err)
-	}
-
-	fmt.Println("Creating pod")
-	if err := c.Create(ctx, upgraderPod); err != nil {
-		log.Fatal(err)
 	}
 }
 
-// NewRuntimeClientFromFileName creates a new controller runtime client given a kubeconfig filename.
-func NewRuntimeClientFromFileName(kubeConfigFilename string) (client.Client, error) {
-	data, err := os.ReadFile(kubeConfigFilename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create new client: %s", err)
-	}
-
-	return newRuntimeClient(data, nil, runtime.NewScheme())
-}
-
-func initScheme(scheme *runtime.Scheme) error {
-	adders := append([]schemeAdder{
-		clientgoscheme.AddToScheme,
-	}, schemeAdders...)
-	if scheme == nil {
-		return fmt.Errorf("scheme was not provided")
-	}
-	return addToScheme(scheme, adders...)
-}
-
-func newRuntimeClient(data []byte, rc restConfigurator, scheme *runtime.Scheme) (client.Client, error) {
-	if rc == nil {
-		rc = restConfigurator(clientcmd.RESTConfigFromKubeConfig)
-	}
-	restConfig, err := rc.Config(data)
-	if err != nil {
+func getControlPlaneNodes(ctx context.Context, c client.Client) ([]corev1.Node, error) {
+	nodes := &corev1.NodeList{}
+	if err := c.List(ctx, nodes, client.HasLabels{"node-role.kubernetes.io/control-plane"}); err != nil {
 		return nil, err
 	}
 
-	if err := initScheme(scheme); err != nil {
-		return nil, fmt.Errorf("failed to init client scheme %v", err)
+	// Sort nodes by name to have reproducible logic
+	slices.SortFunc(nodes.Items, func(a, b corev1.Node) int {
+		if a.Name < b.Name {
+			return 1
+		} else if a.Name > b.Name {
+			return -1
+		}
+
+		return 0
+	})
+
+	return nodes.Items, nil
+}
+
+func upgradeFirstControlPlaneNode(ctx context.Context, c client.Client, node *corev1.Node) error {
+	upgrader := upgradeFirstControlPlanePod(node.Name)
+	return upgradeNode(ctx, c, node, upgrader)
+}
+
+func upgradeRestControlPlaneNode(ctx context.Context, c client.Client, node *corev1.Node) error {
+	upgrader := upgradeRestControlPlanePod(node.Name)
+	return upgradeNode(ctx, c, node, upgrader)
+}
+
+const targetVersion = "v1.27.4-eks-cedffd4"
+
+func upgradeNode(ctx context.Context, c client.Client, node *corev1.Node, upgrader *corev1.Pod) error {
+	if node.Status.NodeInfo.KubeletVersion == targetVersion {
+		fmt.Printf("Node %s has already been upgraded\n", node.Name)
+		return nil
 	}
 
-	err = clientgoscheme.AddToScheme(scheme)
-	if err != nil {
-		return nil, err
+	fmt.Printf("Upgrading node %s\n", node.Name)
+	key := client.ObjectKeyFromObject(upgrader)
+	pod := &corev1.Pod{}
+
+	if err := c.Get(ctx, key, pod); apierrors.IsNotFound(err) {
+		fmt.Println("Creating pod")
+		if err := c.Create(ctx, upgrader); err != nil {
+			log.Fatal(err)
+		}
+	} else if err == nil {
+		fmt.Println("Pod exists, skipping creation")
+	} else {
+		return err
 	}
 
-	return client.New(restConfig, client.Options{Scheme: scheme})
-}
-
-// restConfigurator abstracts the creation of a controller-runtime *rest.Config.
-//
-// This abstraction improves testing, as all known methods of instantiating a
-// *rest.Config try to make network calls, and that's something we'd like to
-// keep out of our unit tests as much as possible. In addition, where we do
-// use them in unit tests, we need to be prepared with a controller-runtime
-// EnvTest environment.
-//
-// For normal, non-test use, this can safely be ignored.
-type restConfigurator func([]byte) (*rest.Config, error)
-
-// Config generates and returns a rest.Config from a kubeconfig in bytes.
-func (c restConfigurator) Config(data []byte) (*rest.Config, error) {
-	return c(data)
-}
-
-type schemeAdder func(s *runtime.Scheme) error
-
-var schemeAdders = []schemeAdder{
-	// clientgoscheme adds all the native K8s kinds
-	clientgoscheme.AddToScheme,
-}
-
-func addToScheme(scheme *runtime.Scheme, schemeAdders ...schemeAdder) error {
-	for _, adder := range schemeAdders {
-		if err := adder(scheme); err != nil {
+waiter:
+	for {
+		if err := c.Get(ctx, key, pod); apierrors.IsNotFound(err) {
+			fmt.Println("Upgrader pod doesn't exist yet, retrying")
+			continue
+		} else if isConnectionRefusedAPIServer(err) {
+			fmt.Println("API server is not up, probably is restarting because of upgrade, retrying")
+			time.Sleep(5 * time.Second)
+			continue
+		} else if err != nil {
 			return err
 		}
+
+		switch pod.Status.Phase {
+		case corev1.PodSucceeded:
+			fmt.Printf("Upgrader Pod %s succeed, upgrade process for node %s is done\n", pod.Name, node.Name)
+			break waiter
+		case corev1.PodFailed:
+			fmt.Printf("Upgrader Pod %s has failed: %s\n", pod.Name, pod.Status.Reason)
+			return errors.Errorf("upgrader Pod %s has failed: %s", pod.Name, pod.Status.Reason)
+		default:
+			fmt.Printf("Upgrader Pod has not finished yet (%s)\n", pod.Status.Phase)
+		}
+
+		time.Sleep(5 * time.Second)
+	}
+
+	if err := c.Delete(ctx, pod, &client.DeleteOptions{}); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+func isConnectionRefusedAPIServer(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "connection refused")
 }
 
 func upgradeFirstControlPlanePod(nodeName string) *corev1.Pod {
