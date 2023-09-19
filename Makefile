@@ -3,12 +3,19 @@ UPGRADE_IMAGE_TAG ?= v$(EKSD_CHANNEL)-eks-d-$(EKSD_RELEASE)
 UPGRADE_IMAGE_REGISTRY ?= eks-d-in-place-upgrader
 UPGRADE_IMAGE_URI ?= $(REGISTRY)/$(UPGRADE_IMAGE_REGISTRY):$(UPGRADE_IMAGE_TAG)
 
-EKSD_CHANNEL ?= 1-27
-EKSD_RELEASE ?= 9
-KUBE_VERSION ?= v1.27.4
+binary:
+	go build ./...
 
 image:
-	docker build --build-arg EKSD_CHANNEL=$(EKSD_CHANNEL) --build-arg EKSD_RELEASE=$(EKSD_RELEASE) --build-arg KUBE_VERSION=$(KUBE_VERSION) -t $(UPGRADE_IMAGE_URI) .
+	docker build --pull -t $(UPGRADE_IMAGE_URI) .
 
 push: image
 	docker push $(UPGRADE_IMAGE_URI)
+
+create-eksd-kind-cluster-1-26:
+	kind create cluster --image public.ecr.aws/eks-anywhere/kubernetes-sigs/kind/node:v1.26.7-eks-d-1-26-16-eks-a-47 --config eks-d-1-26-kind.config 
+	kind get kubeconfig > kind.kubeconfig
+
+delete-pod-and-run:
+	kubectl delete pod -n eksa-system eks-d-upgrader-kind-control-plane || true
+	./eks-d-in-place-upgrade kind.kubeconfig

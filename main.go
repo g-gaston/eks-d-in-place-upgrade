@@ -277,13 +277,16 @@ func isWeirdErrorWhileEtcdRestarts(err error) bool {
 }
 
 const (
-	image         = "public.ecr.aws/i0f3w2d9/eks-d-in-place-upgrader:v1-27-eks-d-9"
-	upgradeScript = "/usr/local/upgrades/eks-d/upgrade.sh"
+	// image = "public.ecr.aws/i0f3w2d9/eks-d-in-place-upgrader:v1-27-eks-d-9"
+	image          = "public.ecr.aws/k1e6s8o8/aws/upgrader:script-1.27"
+	upgradeScript  = "/foo/eksa-upgrades/scripts/upgrade.sh"
+	kubeletVersion = "v1.27.4-eks-1-27-9"
+	etcdVersion    = "v3.5.8-eks-1-27-9"
 )
 
 func upgradeFirstControlPlanePod(nodeName string) *corev1.Pod {
 	p := upgradePod(nodeName)
-	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_first_cp", "v1.27.4-eks-1-27-9", "v3.5.8-eks-1-27-9")
+	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_first_cp", kubeletVersion, etcdVersion)
 	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
 
 	return p
@@ -308,9 +311,11 @@ func upgradeWorkerPod(nodeName string) *corev1.Pod {
 func containersForUpgrade(image, nodeName string, kubeadmUpgradeCommand ...string) []corev1.Container {
 	return []corev1.Container{
 		copierContainer(image),
+		nsenterContainer("containerd-upgrader", upgradeScript, "upgrade_containerd"),
+		nsenterContainer("cni-plugins-upgrader", upgradeScript, "cni_plugins"),
 		nsenterContainer("kubeadm-upgrader", append([]string{upgradeScript}, kubeadmUpgradeCommand...)...),
 		drainerContainer(image, nodeName),
-		nsenterContainer("kubelet-kubelet-upgrader", upgradeScript, "kubelet_and_kubectl"),
+		nsenterContainer("kubelet-kubectl-upgrader", upgradeScript, "kubelet_and_kubectl"),
 		uncordonContainer(image, nodeName),
 	}
 }
@@ -339,7 +344,7 @@ func upgradePod(nodeName string) *corev1.Pod {
 					Name: "host-components",
 					VolumeSource: corev1.VolumeSource{
 						HostPath: &corev1.HostPathVolumeSource{
-							Path: "/usr/local/upgrades",
+							Path: "/foo",
 							Type: &dirOrCreate,
 						},
 					},
@@ -354,7 +359,7 @@ func copierContainer(image string) corev1.Container {
 		Name:    "components-copier",
 		Image:   image,
 		Command: []string{"cp"},
-		Args:    []string{"-r", "/usr/local/eks-d", "/usr/host"},
+		Args:    []string{"-r", "/eksa-upgrades", "/usr/host"},
 		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:      "host-components",
@@ -394,7 +399,7 @@ func drainerContainer(image, nodeName string) corev1.Container {
 	return corev1.Container{
 		Name:            "drain",
 		Image:           image,
-		Command:         []string{"/usr/local/eks-d/kubectl"},
+		Command:         []string{"/eksa-upgrades/binaries/kubernetes/usr/bin/kubectl"},
 		Args:            []string{"drain", nodeName, "--ignore-daemonsets", "--pod-selector", "!ekd-d-upgrader"},
 		ImagePullPolicy: corev1.PullAlways,
 	}
@@ -404,7 +409,7 @@ func uncordonContainer(image, nodeName string) corev1.Container {
 	return corev1.Container{
 		Name:            "uncordon",
 		Image:           image,
-		Command:         []string{"/usr/local/eks-d/kubectl"},
+		Command:         []string{"/eksa-upgrades/binaries/kubernetes/usr/bin/kubectl"},
 		Args:            []string{"uncordon", nodeName},
 		ImagePullPolicy: corev1.PullAlways,
 	}
