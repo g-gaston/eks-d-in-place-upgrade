@@ -33,14 +33,6 @@ components_dir=$(dirname "$(realpath "$0")")
 
 backup_and_replace /usr/bin/kubeadm "$components_dir" "$components_dir/kubeadm"
 
-# Backup and delete coredns configmap. If the CM doesn't exist, kubeadm will skip its upgrade.
-# This is desirable for 2 reaons:
-# - CAPI already takes care of coredns upgrades
-# - kubeadm will fail when verifying the current version of coredns bc the image tag created by
-#   eks-s is not recognised by the migration verification logic https://github.com/coredns/corefile-migration/blob/master/migration/versions.go
-# Ideally we will instruct kubeadm to just skip coredns upgrade during this phase, but
-# it doesn't seem like there is an option.
-
 kubeadm version
 kubeadm upgrade node --ignore-preflight-errors=CoreDNSUnsupportedPlugins,CoreDNSMigration
 
