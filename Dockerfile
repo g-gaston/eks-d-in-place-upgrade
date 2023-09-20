@@ -14,3 +14,4 @@ RUN mkdir -p $BIN_PATH
 RUN for bin in $BINARIES; do wget $DOWNLOAD_URL/$bin -O $BIN_PATH/$bin; chmod +x $BIN_PATH/$bin ; done
 COPY upgrade_first_cp.sh $BIN_PATH/
 COPY upgrade_rest_cp.sh $BIN_PATH/
+COPY upgrade_worker.sh $BIN_PATH/
