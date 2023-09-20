@@ -251,52 +251,47 @@ func isConnectionRefusedAPIServer(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "connection refused")
 }
 
-const image = "public.ecr.aws/i0f3w2d9/eks-d-in-place-upgrader:v1-27-eks-d-9"
+const (
+	image         = "public.ecr.aws/i0f3w2d9/eks-d-in-place-upgrader:v1-27-eks-d-9"
+	upgradeScript = "/usr/local/upgrades/eks-d/upgrade.sh"
+)
 
 func upgradeFirstControlPlanePod(nodeName string) *corev1.Pod {
 	p := upgradePod(nodeName)
-	p.Spec.InitContainers = []corev1.Container{
-		copierContainer(image),
-		nsenterContainer("upgrader", "/usr/local/upgrades/eks-d/upgrade_first_cp.sh", "v1.27.4-eks-1-27-9"),
-	}
-
-	// TODO: add more info here, but script is no available bc it gets cleaned up in init containers
-	p.Spec.Containers = []corev1.Container{
-		nsenterContainer("post-upgrade-status", "systemctl", "status", "kubelet"),
-	}
+	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_first_cp", "v1.27.4-eks-1-27-9")
+	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
 
 	return p
 }
 
 func upgradeRestControlPlanePod(nodeName string) *corev1.Pod {
 	p := upgradePod(nodeName)
-	p.Spec.InitContainers = []corev1.Container{
-		copierContainer(image),
-		nsenterContainer("upgrader", "/usr/local/upgrades/eks-d/upgrade_rest_cp.sh"),
-	}
-
-	// TODO: add more info here, but script is no available bc it gets cleaned up in init containers
-	p.Spec.Containers = []corev1.Container{
-		nsenterContainer("post-upgrade-status", "systemctl", "status", "kubelet"),
-	}
+	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_rest_cp")
+	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
 
 	return p
 }
 
 func upgradeWorkerPod(nodeName string) *corev1.Pod {
 	p := upgradePod(nodeName)
-	p.Spec.InitContainers = []corev1.Container{
-		copierContainer(image),
-		nsenterContainer("kubeadm-upgrader", "/usr/local/upgrades/eks-d/upgrade_worker.sh", "kubeadm_upgrade"),
-		drainerContainer(image, nodeName),
-		nsenterContainer("kubelet-kubelet-upgrader", "/usr/local/upgrades/eks-d/upgrade_worker.sh", "kubelet_kubectl_upgrade"),
-		uncordonContainer(image, nodeName),
-	}
-	p.Spec.Containers = []corev1.Container{
-		nsenterContainer("post-upgrade-status", "/usr/local/upgrades/eks-d/upgrade_worker.sh", "print_status_and_cleanup"),
-	}
+	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_worker")
+	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
 
 	return p
+}
+
+func containersForUpgrade(image, nodeName string, kubeadmUpgradeCommand ...string) []corev1.Container {
+	return []corev1.Container{
+		copierContainer(image),
+		nsenterContainer("kubeadm-upgrader", append([]string{upgradeScript}, kubeadmUpgradeCommand...)...),
+		drainerContainer(image, nodeName),
+		nsenterContainer("kubelet-kubelet-upgrader", upgradeScript, "kubelet_and_kubectl"),
+		uncordonContainer(image, nodeName),
+	}
+}
+
+func printAndCleanupContainer() corev1.Container {
+	return nsenterContainer("post-upgrade-status", upgradeScript, "print_status_and_cleanup")
 }
 
 func upgradePod(nodeName string) *corev1.Pod {
