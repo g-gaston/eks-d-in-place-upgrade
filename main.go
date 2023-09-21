@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/pkg/errors"
 	"golang.org/x/exp/slices"
 	corev1 "k8s.io/api/core/v1"
@@ -16,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
 	"k8s.io/utils/pointer"
@@ -25,6 +29,11 @@ import (
 func main() {
 	ctx := context.Background()
 	c, err := NewRuntimeClientFromFileName(os.Args[1])
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	goClient, err := newGoClient(os.Args[1])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -39,13 +48,13 @@ func main() {
 	}
 
 	firstCPNode := nodes[0]
-	if err := upgradeFirstControlPlaneNode(ctx, c, &firstCPNode); err != nil {
+	if err := upgradeFirstControlPlaneNode(ctx, c, goClient, &firstCPNode); err != nil {
 		log.Fatal(err)
 	}
 
 	for _, node := range nodes[1:] {
 		n := node
-		if err := upgradeRestControlPlaneNode(ctx, c, &n); err != nil {
+		if err := upgradeRestControlPlaneNode(ctx, c, goClient, &n); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -57,12 +66,12 @@ func main() {
 
 	for _, node := range workers {
 		n := node
-		if err := upgradeWorkerNode(ctx, c, &n); err != nil {
+		if err := upgradeWorkerNode(ctx, c, goClient, &n); err != nil {
 			log.Fatal(err)
 		}
 	}
 
-	fmt.Println("🎉 Cluster upgraded 🎉")
+	log.Println("🎉 Cluster upgraded 🎉")
 }
 
 func setup(ctx context.Context, c client.Client) error {
@@ -121,7 +130,7 @@ func setup(ctx context.Context, c client.Client) error {
 	}
 
 	for _, obj := range objs {
-		fmt.Printf("Creating %s\n", klog.KObj(obj))
+		log.Printf("Creating %s\n", klog.KObj(obj))
 		if err := createNoError(ctx, c, obj); err != nil {
 			return err
 		}
@@ -175,51 +184,55 @@ func getNodes(ctx context.Context, c client.Client, lisOpts ...client.ListOption
 	return nodes.Items, nil
 }
 
-func upgradeFirstControlPlaneNode(ctx context.Context, c client.Client, node *corev1.Node) error {
+func upgradeFirstControlPlaneNode(ctx context.Context, c client.Client, logClient *kubernetes.Clientset, node *corev1.Node) error {
 	upgrader := upgradeFirstControlPlanePod(node.Name)
-	return upgradeNode(ctx, c, node, upgrader)
+	return upgradeNode(ctx, c, logClient, node, upgrader)
 }
 
-func upgradeRestControlPlaneNode(ctx context.Context, c client.Client, node *corev1.Node) error {
+func upgradeRestControlPlaneNode(ctx context.Context, c client.Client, logClient *kubernetes.Clientset, node *corev1.Node) error {
 	upgrader := upgradeRestControlPlanePod(node.Name)
-	return upgradeNode(ctx, c, node, upgrader)
+	return upgradeNode(ctx, c, logClient, node, upgrader)
 }
 
-func upgradeWorkerNode(ctx context.Context, c client.Client, node *corev1.Node) error {
+func upgradeWorkerNode(ctx context.Context, c client.Client, logClient *kubernetes.Clientset, node *corev1.Node) error {
 	upgrader := upgradeWorkerPod(node.Name)
-	return upgradeNode(ctx, c, node, upgrader)
+	return upgradeNode(ctx, c, logClient, node, upgrader)
 }
 
 const targetVersion = "v1.27.4-eks-cedffd4"
 
-func upgradeNode(ctx context.Context, c client.Client, node *corev1.Node, upgrader *corev1.Pod) error {
-	if node.Status.NodeInfo.KubeletVersion == targetVersion {
-		fmt.Printf("Node %s has already been upgraded\n", node.Name)
-		return nil
-	}
-
-	fmt.Printf("Upgrading node %s\n", node.Name)
+func upgradeNode(ctx context.Context, c client.Client, logClient *kubernetes.Clientset, node *corev1.Node, upgrader *corev1.Pod) error {
+	log.Printf("Upgrading node %s\n", node.Name)
 	key := client.ObjectKeyFromObject(upgrader)
 	pod := &corev1.Pod{}
 
 	if err := c.Get(ctx, key, pod); apierrors.IsNotFound(err) {
-		fmt.Println("Creating pod")
+		if node.Status.NodeInfo.KubeletVersion == targetVersion {
+			log.Printf("Node %s was already in desired version\n", node.Name)
+			return nil
+		}
+
+		log.Println("Creating pod")
 		if err := c.Create(ctx, upgrader); err != nil {
 			log.Fatal(err)
 		}
 	} else if err == nil {
-		fmt.Println("Pod exists, skipping creation")
+		log.Println("Pod exists, skipping creation")
 	} else {
+		return err
+	}
+
+	if err := getPodLogs(ctx, logClient, upgrader); err != nil {
 		return err
 	}
 
 waiter:
 	for {
 		if err := c.Get(ctx, key, pod); apierrors.IsNotFound(err) {
-			fmt.Println("Upgrader pod doesn't exist yet, retrying")
+			log.Println("Upgrader pod doesn't exist yet, retrying")
 			continue
 		} else if isConnectionRefusedAPIServer(err) {
-			fmt.Println("API server is not up, probably is restarting because of upgrade, retrying")
+			log.Println("API server is not up, probably is restarting because of upgrade, retrying")
 			time.Sleep(5 * time.Second)
 			continue
 		} else if err != nil {
@@ -228,18 +241,19 @@ waiter:
 
 		switch pod.Status.Phase {
 		case corev1.PodSucceeded:
-			fmt.Printf("Upgrader Pod %s succeed, upgrade process for node %s is done\n", pod.Name, node.Name)
+			log.Printf("Upgrader Pod %s succeed, upgrade process for node %s is done\n", pod.Name, node.Name)
 			break waiter
 		case corev1.PodFailed:
-			fmt.Printf("Upgrader Pod %s has failed: %s\n", pod.Name, pod.Status.Reason)
+			log.Printf("Upgrader Pod %s has failed: %s\n", pod.Name, pod.Status.Reason)
 			return errors.Errorf("upgrader Pod %s has failed: %s", pod.Name, pod.Status.Reason)
 		default:
-			fmt.Printf("Upgrader Pod has not finished yet (%s)\n", pod.Status.Phase)
+			log.Printf("Upgrader Pod has not finished yet (%s)\n", pod.Status.Phase)
 		}
 
 		time.Sleep(5 * time.Second)
 	}
 
+	log.Printf("Deleting upgrader pod %s after success\n", upgrader.Name)
 	if err := c.Delete(ctx, pod, &client.DeleteOptions{}); err != nil {
 		return err
 	}
@@ -249,6 +263,14 @@ waiter:
 
 func isConnectionRefusedAPIServer(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "connection refused")
+}
+
+func isConnectionResetAPIServer(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "connection reset by peer")
+}
+
+func isPodInitializing(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "is waiting to start: PodInitializing")
 }
 
 const (
@@ -383,4 +405,57 @@ func uncordonContainer(image, nodeName string) corev1.Container {
 		Args:            []string{"uncordon", nodeName},
 		ImagePullPolicy: corev1.PullAlways,
 	}
+}
+
+func getPodLogs(ctx context.Context, clientSet *kubernetes.Clientset, pod *corev1.Pod) error {
+	blue := color.New(color.FgBlue).SprintfFunc()
+	yellow := color.New(color.FgYellow).SprintfFunc()
+	podName := pod.Name
+	namespace := pod.Namespace
+
+	color.Yellow("_____________________________________________________________________")
+	log.Println(yellow("%s upgrade process start", pod.Spec.NodeName))
+	color.Yellow("_____________________________________________________________________")
+
+containers:
+	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+		podLogOpts := corev1.PodLogOptions{}
+		podLogOpts.Follow = true
+		podLogOpts.TailLines = pointer.Int64(100)
+		podLogOpts.Container = container.Name
+		var podLogs io.ReadCloser
+		var err error
+		log.Println(yellow("Phase %s in %s", container.Name, pod.Spec.NodeName))
+		log.Printf("Waiting for %s to start\n", container.Name)
+		for {
+			podLogs, err = clientSet.CoreV1().Pods(namespace).GetLogs(podName, &podLogOpts).Stream(ctx)
+			if apierrors.IsNotFound(err) || isPodInitializing(err) || isConnectionRefusedAPIServer(err) || isConnectionResetAPIServer(err) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			break
+		}
+
+		color.Yellow("------------------------------------------------------")
+		reader := bufio.NewScanner(podLogs)
+		for reader.Scan() {
+			select {
+			case <-ctx.Done():
+				podLogs.Close()
+				continue containers
+			default:
+				line := reader.Text()
+				fmt.Printf("%s %s\n", blue("[%s]", podLogOpts.Container), line)
+			}
+		}
+		if reader.Err() != nil {
+			log.Println("INFO log EOF " + reader.Err().Error() + ": " + podLogOpts.Container)
+		}
+		podLogs.Close()
+		color.Yellow("------------------------------------------------------")
+	}
+
+	return nil
 }
