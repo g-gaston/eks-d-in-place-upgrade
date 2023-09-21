@@ -149,7 +149,7 @@ func getWorkerNodes(ctx context.Context, c client.Client) ([]corev1.Node, error)
 	if err != nil {
 		return nil, err
 	}
-	selector.Add(*r)
+	selector = selector.Add(*r)
 
 	return getNodes(ctx, c, client.MatchingLabelsSelector{Selector: selector})
 }
