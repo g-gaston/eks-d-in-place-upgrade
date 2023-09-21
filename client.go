@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -83,4 +84,17 @@ func addToScheme(scheme *runtime.Scheme, schemeAdders ...schemeAdder) error {
 	}
 
 	return nil
+}
+
+func newGoClient(kubeConfigFilename string) (*kubernetes.Clientset, error) {
+	data, err := os.ReadFile(kubeConfigFilename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new client: %s", err)
+	}
+	restConfig, err := clientcmd.RESTConfigFromKubeConfig(data)
+	if err != nil {
+		return nil, err
+	}
+
+	return kubernetes.NewForConfig(restConfig)
 }
