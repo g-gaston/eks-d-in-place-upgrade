@@ -21,8 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
-
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -382,7 +381,7 @@ func baseNsenterContainer() corev1.Container {
 			"--net",
 		},
 		SecurityContext: &corev1.SecurityContext{
-			Privileged: pointer.Bool(true),
+			Privileged: ptr.To(true),
 		},
 	}
 }
@@ -421,7 +420,7 @@ containers:
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 		podLogOpts := corev1.PodLogOptions{}
 		podLogOpts.Follow = true
-		podLogOpts.TailLines = pointer.Int64(100)
+		podLogOpts.TailLines = ptr.To(int64(100))
 		podLogOpts.Container = container.Name
 		var podLogs io.ReadCloser
 		var err error
