@@ -26,14 +26,14 @@ backup_and_replace() {
 }
 
 upgrade_components_dir() {
-  echo $(dirname "$(realpath "$0")")
+  echo "/foo/eksa-upgrades/binaries"
 }
 
 kubeadm_in_first_cp(){
   kube_version=$1
   etcd_version=$2
 
-  components_dir=$(upgrade_components_dir)
+  components_dir=$(upgrade_components_dir)/kubernetes/usr/bin
 
   backup_and_replace /usr/bin/kubeadm "$components_dir" "$components_dir/kubeadm"
 
@@ -51,6 +51,10 @@ kubeadm_in_first_cp(){
   sed -zE "s/(imageRepository: public.ecr.aws\/eks-distro\/etcd-io\n\s+imageTag: )[^\n]*/\1${etcd_version}/" "$kubeadm_config_backup" > "$new_kubeadm_config"
   #TODO: do the same for the pause image
 
+  # the kubelet config appears to lose values, in the case of a kind cluster the failSwapOn:false
+  echo "---" >> "$new_kubeadm_config"
+  kubectl get cm -n kube-system kubelet-config -ojsonpath='{.data.kubelet}' --kubeconfig /etc/kubernetes/admin.conf >> "$new_kubeadm_config"
+
   coredns_backup="${components_dir}/coredns.yaml"
   coredns=$(kubectl get cm -n kube-system coredns -oyaml --kubeconfig /etc/kubernetes/admin.conf --ignore-not-found=true)
   if [ -n "$coredns" ]; then
@@ -67,7 +71,7 @@ kubeadm_in_first_cp(){
 }
 
 kubeadm_in_rest_cp(){
-  components_dir=$(upgrade_components_dir)
+  components_dir=$(upgrade_components_dir)/kubernetes/usr/bin
 
   backup_and_replace /usr/bin/kubeadm "$components_dir" "$components_dir/kubeadm"
 
@@ -76,7 +80,7 @@ kubeadm_in_rest_cp(){
 }
 
 kubeadm_in_worker() {
-  components_dir=$(upgrade_components_dir)
+  components_dir=$(upgrade_components_dir)/kubernetes/usr/bin
 
   backup_and_replace /usr/bin/kubeadm "$components_dir" "$components_dir/kubeadm"
 
@@ -85,7 +89,7 @@ kubeadm_in_worker() {
 }
 
 kubelet_and_kubectl() {
-  components_dir=$(upgrade_components_dir)
+  components_dir=$(upgrade_components_dir)/kubernetes/usr/bin
 
   backup_and_replace /usr/bin/kubectl "$components_dir" "$components_dir/kubectl"
 
@@ -93,6 +97,42 @@ kubelet_and_kubectl() {
   backup_and_replace /usr/bin/kubelet "$components_dir" "$components_dir/kubelet"
   systemctl daemon-reload
   systemctl restart kubelet
+}
+
+upgrade_containerd() {
+  components_dir=$(upgrade_components_dir)
+
+  containerd --version
+
+  # before nsenter, copy /eksa-upgrades to /tmp/eksa-upgrades
+  # IDEA: similiar to the kubeadm flow, we could loop the folder structure
+  # and for each binary/config file backup the existing file before copying 
+  # so there is a rollback path
+  cp -rf $components_dir/containerd/* /
+
+  containerd --version
+
+  systemctl daemon-reload
+  # systemctl stop containerd
+
+  systemctl restart containerd
+
+}
+
+cni_plugins() {  
+  components_dir=$(upgrade_components_dir)
+  
+  /opt/cni/bin/loopback --version
+
+  # before nsenter, copy /eksa-upgrades to /tmp/eksa-upgrades
+  # IDEA: similiar to the kubeadm flow, we could loop the folder structure
+  # and for each binary/config file backup the existing file before copying 
+  # so there is a rollback path
+  cp -rf $components_dir/cni-plugins/* /
+
+  /opt/cni/bin/loopback --version
+
+  # rm -rf /foo/eksa-upgrades
 }
 
 print_status() {

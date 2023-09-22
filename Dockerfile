@@ -1,15 +1,5 @@
-ARG NSENTER=justincormack/nsenter1
-FROM $NSENTER as BUILD
+# built from https://github.com/aws/eks-anywhere-build-tooling/pull/2504 and pushed to jgw public ecr
+FROM public.ecr.aws/k1e6s8o8/aws/upgrader:v1-27-12-latest
+ARG BIN_PATH=/eksa-upgrades/scripts/
 
-FROM alpine:latest
-ARG BINARIES="kubectl kubeadm kubelet"
-ARG BIN_PATH=/usr/local/eks-d
-ARG EKSD_CHANNEL
-ARG EKSD_RELEASE
-ARG KUBE_VERSION
-ARG DOWNLOAD_URL=https://distro.eks.amazonaws.com/kubernetes-$EKSD_CHANNEL/releases/$EKSD_RELEASE/artifacts/kubernetes/$KUBE_VERSION/bin/linux/amd64
-
-COPY --from=BUILD /usr/bin/nsenter1 /usr/bin/nsenter1
-RUN mkdir -p $BIN_PATH
-RUN for bin in $BINARIES; do wget $DOWNLOAD_URL/$bin -O $BIN_PATH/$bin; chmod +x $BIN_PATH/$bin ; done
 COPY upgrade.sh $BIN_PATH/
