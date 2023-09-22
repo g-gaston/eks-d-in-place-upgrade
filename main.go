@@ -26,6 +26,11 @@ import (
 )
 
 func main() {
+	image := os.Args[2]
+	if os.Getenv("FORCE_COLOR") == "true" {
+		color.NoColor = false
+	}
+
 	ctx := context.Background()
 	c, err := NewRuntimeClientFromFileName(os.Args[1])
 	if err != nil {
@@ -47,13 +52,13 @@ func main() {
 	}
 
 	firstCPNode := nodes[0]
-	if err := upgradeFirstControlPlaneNode(ctx, c, goClient, &firstCPNode); err != nil {
+	if err := upgradeFirstControlPlaneNode(ctx, c, goClient, &firstCPNode, image); err != nil {
 		log.Fatal(err)
 	}
 
 	for _, node := range nodes[1:] {
 		n := node
-		if err := upgradeRestControlPlaneNode(ctx, c, goClient, &n); err != nil {
+		if err := upgradeRestControlPlaneNode(ctx, c, goClient, &n, image); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -65,7 +70,7 @@ func main() {
 
 	for _, node := range workers {
 		n := node
-		if err := upgradeWorkerNode(ctx, c, goClient, &n); err != nil {
+		if err := upgradeWorkerNode(ctx, c, goClient, &n, image); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -183,18 +188,18 @@ func getNodes(ctx context.Context, c client.Client, lisOpts ...client.ListOption
 	return nodes.Items, nil
 }
 
-func upgradeFirstControlPlaneNode(ctx context.Context, c client.Client, logClient *kubernetes.Clientset, node *corev1.Node) error {
-	upgrader := upgradeFirstControlPlanePod(node.Name)
+func upgradeFirstControlPlaneNode(ctx context.Context, c client.Client, logClient *kubernetes.Clientset, node *corev1.Node, image string) error {
+	upgrader := upgradeFirstControlPlanePod(node.Name, image)
 	return upgradeNode(ctx, c, logClient, node, upgrader)
 }
 
-func upgradeRestControlPlaneNode(ctx context.Context, c client.Client, logClient *kubernetes.Clientset, node *corev1.Node) error {
-	upgrader := upgradeRestControlPlanePod(node.Name)
+func upgradeRestControlPlaneNode(ctx context.Context, c client.Client, logClient *kubernetes.Clientset, node *corev1.Node, image string) error {
+	upgrader := upgradeRestControlPlanePod(node.Name, image)
 	return upgradeNode(ctx, c, logClient, node, upgrader)
 }
 
-func upgradeWorkerNode(ctx context.Context, c client.Client, logClient *kubernetes.Clientset, node *corev1.Node) error {
-	upgrader := upgradeWorkerPod(node.Name)
+func upgradeWorkerNode(ctx context.Context, c client.Client, logClient *kubernetes.Clientset, node *corev1.Node, image string) error {
+	upgrader := upgradeWorkerPod(node.Name, image)
 	return upgradeNode(ctx, c, logClient, node, upgrader)
 }
 
@@ -276,15 +281,17 @@ func isWeirdErrorWhileEtcdRestarts(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "Internal error occurred: Authorization error")
 }
 
+func isEOFFromAPI(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "EOF")
+}
+
 const (
-	// image = "public.ecr.aws/i0f3w2d9/eks-d-in-place-upgrader:v1-27-eks-d-9"
-	image          = "public.ecr.aws/k1e6s8o8/aws/upgrader:script-1.27"
 	upgradeScript  = "/foo/eksa-upgrades/scripts/upgrade.sh"
 	kubeletVersion = "v1.27.4-eks-1-27-9"
 	etcdVersion    = "v3.5.8-eks-1-27-9"
 )
 
-func upgradeFirstControlPlanePod(nodeName string) *corev1.Pod {
+func upgradeFirstControlPlanePod(nodeName, image string) *corev1.Pod {
 	p := upgradePod(nodeName)
 	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_first_cp", kubeletVersion, etcdVersion)
 	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
@@ -292,7 +299,7 @@ func upgradeFirstControlPlanePod(nodeName string) *corev1.Pod {
 	return p
 }
 
-func upgradeRestControlPlanePod(nodeName string) *corev1.Pod {
+func upgradeRestControlPlanePod(nodeName, image string) *corev1.Pod {
 	p := upgradePod(nodeName)
 	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_rest_cp")
 	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
@@ -300,7 +307,7 @@ func upgradeRestControlPlanePod(nodeName string) *corev1.Pod {
 	return p
 }
 
-func upgradeWorkerPod(nodeName string) *corev1.Pod {
+func upgradeWorkerPod(nodeName, image string) *corev1.Pod {
 	p := upgradePod(nodeName)
 	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_worker")
 	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
@@ -441,7 +448,8 @@ containers:
 				isPodInitializing(err) ||
 				isConnectionRefusedAPIServer(err) ||
 				isConnectionResetAPIServer(err) ||
-				isWeirdErrorWhileEtcdRestarts(err) {
+				isWeirdErrorWhileEtcdRestarts(err) ||
+				isEOFFromAPI(err) {
 				continue
 			}
 			if err != nil {
