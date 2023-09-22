@@ -272,6 +272,10 @@ func isPodInitializing(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "is waiting to start: PodInitializing")
 }
 
+func isWeirdErrorWhileEtcdRestarts(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "Internal error occurred: Authorization error")
+}
+
 const (
 	image         = "public.ecr.aws/i0f3w2d9/eks-d-in-place-upgrader:v1-27-eks-d-9"
 	upgradeScript = "/usr/local/upgrades/eks-d/upgrade.sh"
@@ -279,7 +283,7 @@ const (
 
 func upgradeFirstControlPlanePod(nodeName string) *corev1.Pod {
 	p := upgradePod(nodeName)
-	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_first_cp", "v1.27.4-eks-1-27-9")
+	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_first_cp", "v1.27.4-eks-1-27-9", "v3.5.8-eks-1-27-9")
 	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
 
 	return p
@@ -428,7 +432,11 @@ containers:
 		log.Printf("Waiting for %s to start\n", container.Name)
 		for {
 			podLogs, err = clientSet.CoreV1().Pods(namespace).GetLogs(podName, &podLogOpts).Stream(ctx)
-			if apierrors.IsNotFound(err) || isPodInitializing(err) || isConnectionRefusedAPIServer(err) || isConnectionResetAPIServer(err) {
+			if apierrors.IsNotFound(err) ||
+				isPodInitializing(err) ||
+				isConnectionRefusedAPIServer(err) ||
+				isConnectionResetAPIServer(err) ||
+				isWeirdErrorWhileEtcdRestarts(err) {
 				continue
 			}
 			if err != nil {

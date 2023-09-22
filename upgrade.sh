@@ -31,6 +31,7 @@ upgrade_components_dir() {
 
 kubeadm_in_first_cp(){
   kube_version=$1
+  etcd_version=$2
 
   components_dir=$(upgrade_components_dir)
 
@@ -44,6 +45,12 @@ kubeadm_in_first_cp(){
   # Ideally we will instruct kubeadm to just skip coredns upgrade during this phase, but
   # it doesn't seem like there is an option.
 
+  kubeadm_config_backup="${components_dir}/kubeadm-config.backup.yaml"
+  new_kubeadm_config="${components_dir}/kubeadm-config.yaml"
+  kubectl get cm -n kube-system kubeadm-config -ojsonpath='{.data.ClusterConfiguration}' --kubeconfig /etc/kubernetes/admin.conf > "$kubeadm_config_backup"
+  sed -zE "s/(imageRepository: public.ecr.aws\/eks-distro\/etcd-io\n\s+imageTag: )[^\n]*/\1${etcd_version}/" "$kubeadm_config_backup" > "$new_kubeadm_config"
+  #TODO: do the same for the pause image
+
   coredns_backup="${components_dir}/coredns.yaml"
   coredns=$(kubectl get cm -n kube-system coredns -oyaml --kubeconfig /etc/kubernetes/admin.conf --ignore-not-found=true)
   if [ -n "$coredns" ]; then
@@ -52,8 +59,8 @@ kubeadm_in_first_cp(){
   kubectl delete cm -n kube-system coredns --kubeconfig /etc/kubernetes/admin.conf --ignore-not-found=true
 
   kubeadm version
-  kubeadm upgrade plan --ignore-preflight-errors=CoreDNSUnsupportedPlugins,CoreDNSMigration
-  kubeadm upgrade apply "$kube_version" --ignore-preflight-errors=CoreDNSUnsupportedPlugins,CoreDNSMigration --allow-experimental-upgrades --yes
+  kubeadm upgrade plan --ignore-preflight-errors=CoreDNSUnsupportedPlugins,CoreDNSMigration --config "$new_kubeadm_config"
+  kubeadm upgrade apply "$kube_version" --config "$new_kubeadm_config" --ignore-preflight-errors=CoreDNSUnsupportedPlugins,CoreDNSMigration --allow-experimental-upgrades --yes
 
   # Restore coredns config backup
   kubectl create -f "$coredns_backup" --kubeconfig /etc/kubernetes/admin.conf
