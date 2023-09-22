@@ -25,15 +25,27 @@ backup_and_replace() {
   backup_file "$old_f" "$backup_folder" && cp "$new_f" "$old_f"
 }
 
+script_dir() {
+  echo $(dirname "$(realpath "$0")")
+}
+
 upgrade_components_dir() {
-  echo "/foo/eksa-upgrades/binaries"
+   echo "$(dirname "$(script_dir)")" 
+}
+
+upgrade_components_bin_dir() {
+  echo "$(upgrade_components_dir)/binaries"
+}
+
+upgrade_components_kubernetes_bin_dir() {
+  echo "$(upgrade_components_bin_dir)/kubernetes/usr/bin"
 }
 
 kubeadm_in_first_cp(){
   kube_version=$1
   etcd_version=$2
 
-  components_dir=$(upgrade_components_dir)/kubernetes/usr/bin
+  components_dir=$(upgrade_components_kubernetes_bin_dir)
 
   backup_and_replace /usr/bin/kubeadm "$components_dir" "$components_dir/kubeadm"
 
@@ -49,7 +61,6 @@ kubeadm_in_first_cp(){
   new_kubeadm_config="${components_dir}/kubeadm-config.yaml"
   kubectl get cm -n kube-system kubeadm-config -ojsonpath='{.data.ClusterConfiguration}' --kubeconfig /etc/kubernetes/admin.conf > "$kubeadm_config_backup"
   sed -zE "s/(imageRepository: public.ecr.aws\/eks-distro\/etcd-io\n\s+imageTag: )[^\n]*/\1${etcd_version}/" "$kubeadm_config_backup" > "$new_kubeadm_config"
-  #TODO: do the same for the pause image
 
   # the kubelet config appears to lose values, in the case of a kind cluster the failSwapOn:false
   echo "---" >> "$new_kubeadm_config"
@@ -71,7 +82,7 @@ kubeadm_in_first_cp(){
 }
 
 kubeadm_in_rest_cp(){
-  components_dir=$(upgrade_components_dir)/kubernetes/usr/bin
+  components_dir=$(upgrade_components_kubernetes_bin_dir)
 
   backup_and_replace /usr/bin/kubeadm "$components_dir" "$components_dir/kubeadm"
 
@@ -80,7 +91,7 @@ kubeadm_in_rest_cp(){
 }
 
 kubeadm_in_worker() {
-  components_dir=$(upgrade_components_dir)/kubernetes/usr/bin
+  components_dir=$(upgrade_components_kubernetes_bin_dir)
 
   backup_and_replace /usr/bin/kubeadm "$components_dir" "$components_dir/kubeadm"
 
@@ -89,7 +100,7 @@ kubeadm_in_worker() {
 }
 
 kubelet_and_kubectl() {
-  components_dir=$(upgrade_components_dir)/kubernetes/usr/bin
+  components_dir=$(upgrade_components_kubernetes_bin_dir)
 
   backup_and_replace /usr/bin/kubectl "$components_dir" "$components_dir/kubectl"
 
@@ -100,7 +111,7 @@ kubelet_and_kubectl() {
 }
 
 upgrade_containerd() {
-  components_dir=$(upgrade_components_dir)
+  components_dir=$(upgrade_components_bin_dir)
 
   containerd --version
 
@@ -120,7 +131,7 @@ upgrade_containerd() {
 }
 
 cni_plugins() {  
-  components_dir=$(upgrade_components_dir)
+  components_dir=$(upgrade_components_bin_dir)
   
   /opt/cni/bin/loopback --version
 
