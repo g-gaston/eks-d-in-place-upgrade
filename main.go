@@ -285,6 +285,10 @@ func isEOFFromAPI(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "EOF")
 }
 
+func isEtcdLeaderChange(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "etcdserver: leader changed")
+}
+
 const (
 	upgradeScript  = "/foo/eksa-upgrades/scripts/upgrade.sh"
 	kubeletVersion = "v1.27.4-eks-1-27-9"
@@ -294,7 +298,7 @@ const (
 func upgradeFirstControlPlanePod(nodeName, image string) *corev1.Pod {
 	p := upgradePod(nodeName)
 	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_first_cp", kubeletVersion, etcdVersion)
-	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
+	p.Spec.Containers = []corev1.Container{printAndCleanupContainer(image)}
 
 	return p
 }
@@ -302,7 +306,7 @@ func upgradeFirstControlPlanePod(nodeName, image string) *corev1.Pod {
 func upgradeRestControlPlanePod(nodeName, image string) *corev1.Pod {
 	p := upgradePod(nodeName)
 	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_rest_cp")
-	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
+	p.Spec.Containers = []corev1.Container{printAndCleanupContainer(image)}
 
 	return p
 }
@@ -310,7 +314,7 @@ func upgradeRestControlPlanePod(nodeName, image string) *corev1.Pod {
 func upgradeWorkerPod(nodeName, image string) *corev1.Pod {
 	p := upgradePod(nodeName)
 	p.Spec.InitContainers = containersForUpgrade(image, nodeName, "kubeadm_in_worker")
-	p.Spec.Containers = []corev1.Container{printAndCleanupContainer()}
+	p.Spec.Containers = []corev1.Container{printAndCleanupContainer(image)}
 
 	return p
 }
@@ -318,17 +322,17 @@ func upgradeWorkerPod(nodeName, image string) *corev1.Pod {
 func containersForUpgrade(image, nodeName string, kubeadmUpgradeCommand ...string) []corev1.Container {
 	return []corev1.Container{
 		copierContainer(image),
-		nsenterContainer("containerd-upgrader", upgradeScript, "upgrade_containerd"),
-		nsenterContainer("cni-plugins-upgrader", upgradeScript, "cni_plugins"),
-		nsenterContainer("kubeadm-upgrader", append([]string{upgradeScript}, kubeadmUpgradeCommand...)...),
+		nsenterContainer(image, "containerd-upgrader", upgradeScript, "upgrade_containerd"),
+		nsenterContainer(image, "cni-plugins-upgrader", upgradeScript, "cni_plugins"),
+		nsenterContainer(image, "kubeadm-upgrader", append([]string{upgradeScript}, kubeadmUpgradeCommand...)...),
 		drainerContainer(image, nodeName),
-		nsenterContainer("kubelet-kubectl-upgrader", upgradeScript, "kubelet_and_kubectl"),
+		nsenterContainer(image, "kubelet-kubectl-upgrader", upgradeScript, "kubelet_and_kubectl"),
 		uncordonContainer(image, nodeName),
 	}
 }
 
-func printAndCleanupContainer() corev1.Container {
-	return nsenterContainer("post-upgrade-status", upgradeScript, "print_status_and_cleanup")
+func printAndCleanupContainer(image string) corev1.Container {
+	return nsenterContainer(image, "post-upgrade-status", upgradeScript, "print_status_and_cleanup")
 }
 
 func upgradePod(nodeName string) *corev1.Pod {
@@ -377,16 +381,16 @@ func copierContainer(image string) corev1.Container {
 	}
 }
 
-func nsenterContainer(containerName string, command ...string) corev1.Container {
-	c := baseNsenterContainer()
+func nsenterContainer(image, containerName string, command ...string) corev1.Container {
+	c := baseNsenterContainer(image)
 	c.Name = containerName
 	c.Args = append(c.Args, command...)
 	return c
 }
 
-func baseNsenterContainer() corev1.Container {
+func baseNsenterContainer(image string) corev1.Container {
 	return corev1.Container{
-		Image:   "public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-nsenter:latest.2",
+		Image:   image,
 		Command: []string{"nsenter"},
 		Args: []string{
 			"--target",
@@ -449,7 +453,8 @@ containers:
 				isConnectionRefusedAPIServer(err) ||
 				isConnectionResetAPIServer(err) ||
 				isWeirdErrorWhileEtcdRestarts(err) ||
-				isEOFFromAPI(err) {
+				isEOFFromAPI(err) ||
+				isEtcdLeaderChange(err) {
 				continue
 			}
 			if err != nil {

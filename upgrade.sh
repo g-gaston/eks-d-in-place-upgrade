@@ -43,11 +43,25 @@ upgrade_components_kubernetes_bin_dir() {
 
 kubeadm_in_first_cp(){
   kube_version=$1
-  etcd_version=$2
+  etcd_version="${2:-NO_UPDATE}"
 
   components_dir=$(upgrade_components_kubernetes_bin_dir)
 
   backup_and_replace /usr/bin/kubeadm "$components_dir" "$components_dir/kubeadm"
+
+
+  kubeadm_config_backup="${components_dir}/kubeadm-config.backup.yaml"
+  new_kubeadm_config="${components_dir}/kubeadm-config.yaml"
+  kubectl get cm -n kube-system kubeadm-config -ojsonpath='{.data.ClusterConfiguration}' --kubeconfig /etc/kubernetes/admin.conf > "$kubeadm_config_backup"
+  cp "$kubeadm_config_backup" "$new_kubeadm_config"
+
+  if [ "$etcd_version" -ne "NO_UPDATE" ]; then
+    sed -zE "s/(imageRepository: public.ecr.aws\/eks-distro\/etcd-io\n\s+imageTag: )[^\n]*/\1${etcd_version}/" "$new_kubeadm_config" >> "$new_kubeadm_config"
+  fi
+
+  # the kubelet config appears to lose values, in the case of a kind cluster the failSwapOn:false
+  echo "---" >> "$new_kubeadm_config"
+  kubectl get cm -n kube-system kubelet-config -ojsonpath='{.data.kubelet}' --kubeconfig /etc/kubernetes/admin.conf >> "$new_kubeadm_config"
 
   # Backup and delete coredns configmap. If the CM doesn't exist, kubeadm will skip its upgrade.
   # This is desirable for 2 reaons:
@@ -56,16 +70,6 @@ kubeadm_in_first_cp(){
   #   eks-s is not recognised by the migration verification logic https://github.com/coredns/corefile-migration/blob/master/migration/versions.go
   # Ideally we will instruct kubeadm to just skip coredns upgrade during this phase, but
   # it doesn't seem like there is an option.
-
-  kubeadm_config_backup="${components_dir}/kubeadm-config.backup.yaml"
-  new_kubeadm_config="${components_dir}/kubeadm-config.yaml"
-  kubectl get cm -n kube-system kubeadm-config -ojsonpath='{.data.ClusterConfiguration}' --kubeconfig /etc/kubernetes/admin.conf > "$kubeadm_config_backup"
-  sed -zE "s/(imageRepository: public.ecr.aws\/eks-distro\/etcd-io\n\s+imageTag: )[^\n]*/\1${etcd_version}/" "$kubeadm_config_backup" > "$new_kubeadm_config"
-
-  # the kubelet config appears to lose values, in the case of a kind cluster the failSwapOn:false
-  echo "---" >> "$new_kubeadm_config"
-  kubectl get cm -n kube-system kubelet-config -ojsonpath='{.data.kubelet}' --kubeconfig /etc/kubernetes/admin.conf >> "$new_kubeadm_config"
-
   coredns_backup="${components_dir}/coredns.yaml"
   coredns=$(kubectl get cm -n kube-system coredns -oyaml --kubeconfig /etc/kubernetes/admin.conf --ignore-not-found=true)
   if [ -n "$coredns" ]; then
